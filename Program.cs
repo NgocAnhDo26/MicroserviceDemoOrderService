@@ -44,6 +44,8 @@ namespace OrderService
 
             app.UseHttpsRedirection();
 
+            app.UseCors(MyAllowSpecificOrigins);
+
             app.UseAuthorization();
 
 
