@@ -1,25 +1,22 @@
+using MicroserviceDemoOrderService.Data;
+using MicroserviceDemoOrderService.DTOs;
+using MicroserviceDemoOrderService.Model;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using OrderService.Data;
-using OrderService.DTOs;
-using OrderService.Model;
-using OrderService.Models;
+
+namespace MicroserviceDemoOrderService.Controllers;
 
 [Route("api/[controller]")]
 [ApiController]
-public class OrdersController : ControllerBase
+public class OrdersController(
+    OrderDbContext context,
+    IHttpClientFactory httpClientFactory,
+    IConfiguration configuration)
+    : ControllerBase
 {
-    private readonly OrderDbContext _context; // Use the context
-    private readonly IHttpClientFactory _httpClientFactory;
-    private readonly IConfiguration _configuration;
+    // Use the context
 
     // Inject the DbContext
-    public OrdersController(OrderDbContext context, IHttpClientFactory httpClientFactory, IConfiguration configuration)
-    {
-        _context = context;
-        _httpClientFactory = httpClientFactory;
-        _configuration = configuration;
-    }
 
     // --- GET Methods ---
     // When retrieving orders, we should include the related items.
@@ -27,20 +24,21 @@ public class OrdersController : ControllerBase
     public async Task<ActionResult<IEnumerable<Order>>> GetOrders()
     {
         // Use Include() to load the related OrderItems
-        return await _context.Orders.Include(o => o.OrderItems).ToListAsync();
+        return await context.Orders.Include(o => o.OrderItems).ToListAsync();
     }
 
-    [HttpGet("{id}")]
+    [HttpGet("{id:int}")]
     public async Task<ActionResult<Order>> GetOrder(int id)
     {
-        var order = await _context.Orders
-                                  .Include(o => o.OrderItems) // Eager load the items
-                                  .FirstOrDefaultAsync(o => o.Id == id);
+        var order = await context.Orders
+            .Include(o => o.OrderItems) // Eager to load the items
+            .FirstOrDefaultAsync(o => o.Id == id);
 
         if (order == null)
         {
             return NotFound();
         }
+
         return order;
     }
 
@@ -49,14 +47,14 @@ public class OrdersController : ControllerBase
     [HttpPost]
     public async Task<ActionResult<Order>> CreateOrder([FromBody] OrderCreateRequest orderRequest)
     {
-        if (orderRequest == null || !orderRequest.ProductIds.Any())
+        if (orderRequest.ProductIds.Count == 0)
         {
             return BadRequest("Order request is invalid or has no products.");
         }
 
-        var client = _httpClientFactory.CreateClient();
-        var userServiceUrl = _configuration["ServiceUrls:UserService"];
-        var productServiceUrl = _configuration["ServiceUrls:ProductService"];
+        var client = httpClientFactory.CreateClient();
+        var userServiceUrl = configuration["ServiceUrls:UserService"];
+        var productServiceUrl = configuration["ServiceUrls:ProductService"];
 
         // 1. Validate User (same as before)
         var userResponse = await client.GetAsync($"{userServiceUrl}/api/users/{orderRequest.UserId}");
@@ -64,6 +62,7 @@ public class OrdersController : ControllerBase
         {
             return BadRequest($"User with ID {orderRequest.UserId} not found or UserService error.");
         }
+
         var user = await userResponse.Content.ReadFromJsonAsync<UserDto>();
         if (user == null) return BadRequest("Failed to deserialize user data.");
 
@@ -78,6 +77,7 @@ public class OrdersController : ControllerBase
             {
                 return BadRequest($"Product with ID {productId} not found or ProductService error.");
             }
+
             var product = await productResponse.Content.ReadFromJsonAsync<ProductDto>();
             if (product == null) return BadRequest($"Failed to deserialize product data for ID {productId}.");
 
@@ -97,19 +97,18 @@ public class OrdersController : ControllerBase
         };
 
         // Create an OrderItem for each product ID and add it to the order
-        foreach (var productId in orderRequest.ProductIds)
+        foreach (var orderItem in orderRequest.ProductIds.Select(productId => new OrderItem
+                 {
+                     ProductId = productId,
+                     Order = newOrder // EF Core will automatically link this
+                 }))
         {
-            var orderItem = new OrderItem
-            {
-                ProductId = productId,
-                Order = newOrder // EF Core will automatically link this
-            };
             newOrder.OrderItems.Add(orderItem);
         }
 
         // 4. Save to the database
-        _context.Orders.Add(newOrder);
-        await _context.SaveChangesAsync(); // This saves the Order and all its related OrderItems in one transaction
+        context.Orders.Add(newOrder);
+        await context.SaveChangesAsync(); // This saves the Order and all its related OrderItems in one transaction
 
         return CreatedAtAction(nameof(GetOrder), new { id = newOrder.Id }, newOrder);
     }

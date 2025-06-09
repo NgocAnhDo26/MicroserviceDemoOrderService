@@ -1,4 +1,4 @@
-namespace OrderService.DTOs;
+namespace MicroserviceDemoOrderService.DTOs;
 
 public class ProductDto
 {

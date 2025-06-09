@@ -253,3 +253,6 @@ ModelManifest.xml
 # env files
 appsettings.json
 appsettings.Development.json
+
+# idea
+.idea/

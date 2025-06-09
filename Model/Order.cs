@@ -1,22 +1,21 @@
 using System.ComponentModel.DataAnnotations.Schema;
-using OrderService.Model;
 
-namespace OrderService.Models;
+namespace MicroserviceDemoOrderService.Model;
 
-public class Order
+public sealed class Order
 {
     public int Id { get; set; }
     public int UserId { get; set; }
     public decimal TotalAmount { get; set; }
     public DateTime OrderDate { get; set; }
-    public virtual ICollection<OrderItem> OrderItems { get; set; } = new List<OrderItem>();
+    public ICollection<OrderItem> OrderItems { get; set; } = new List<OrderItem>();
 
     // --- These properties are for display/DTO purposes only ---
     [NotMapped]
     public string? UserName { get; set; }
 
     [NotMapped]
-    public List<string> ProductNames { get; set; } = new List<string>();
+    public List<string> ProductNames { get; set; } = [];
 
     [NotMapped]
     public List<int> ProductIds => OrderItems.Select(oi => oi.ProductId).ToList();
@@ -25,5 +24,5 @@ public class Order
 public class OrderCreateRequest
 {
     public int UserId { get; set; }
-    public List<int> ProductIds { get; set; } = new List<int>();
+    public List<int> ProductIds { get; set; } = [];
 }
