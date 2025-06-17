@@ -4,19 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/jackc/pgx/v5"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
 	"time"
 
-	// "github.com/gorilla/handlers" // 1. CORS is no longer needed here
 	"github.com/gorilla/mux"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 )
 
-// ... (Struct definitions remain the same) ...
 type OrderCreateRequest struct {
 	UserID     int   `json:"userId"`
 	ProductIds []int `json:"productIds"`
@@ -36,12 +36,6 @@ type OrderItem struct {
 	ProductID int `json:"productId"`
 }
 
-type User struct {
-	ID    int    `json:"id"`
-	Name  string `json:"name"`
-	Email string `json:"email"`
-}
-
 type Product struct {
 	ID    string  `json:"_id"`
 	Name  string  `json:"name"`
@@ -57,9 +51,11 @@ func writeJSONError(w http.ResponseWriter, message string, statusCode int) {
 	log.Printf("ERROR: Returning status %d with message: %s", statusCode, message)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(map[string]string{"error": message})
+	err := json.NewEncoder(w).Encode(map[string]string{"error": message})
+	if err != nil {
+		return
+	}
 }
-
 
 func main() {
 
@@ -97,11 +93,11 @@ func main() {
 // Note: The logic inside the handler functions does not need to change.
 // They are omitted here for brevity but are the same as the previous version.
 
-func (a *App) getAllOrdersHandler(w http.ResponseWriter, r *http.Request) {
+func (a *App) getAllOrdersHandler(w http.ResponseWriter, _ *http.Request) {
 	log.Println("--- DEBUG[GetAll]: Starting getAllOrdersHandler ---")
 	w.Header().Set("Content-Type", "application/json")
 
-	orders := []*Order{}
+	var orders []*Order
 	orderQuery := `SELECT id, userid, totalamount, orderdate FROM orders ORDER BY orderdate DESC`
 
 	rows, err := a.DB.Query(context.Background(), orderQuery)
@@ -129,7 +125,7 @@ func (a *App) getAllOrdersHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("--- DEBUG[GetAll]: Found %d orders.", len(orders))
 
 	if len(orders) == 0 {
-		json.NewEncoder(w).Encode([]*Order{})
+		_ = json.NewEncoder(w).Encode([]*Order{})
 		return
 	}
 
@@ -159,7 +155,10 @@ func (a *App) getAllOrdersHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	json.NewEncoder(w).Encode(orders)
+	err = json.NewEncoder(w).Encode(orders)
+	if err != nil {
+		return
+	}
 	log.Println("--- DEBUG[GetAll]: Finished getAllOrdersHandler and sent response. ---")
 }
 
@@ -178,13 +177,13 @@ func (a *App) getOrdersByUserIDHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	orders := []*Order{}
+	var orders []*Order
 	orderQuery := `SELECT id, userid, totalamount, orderdate FROM orders WHERE userid = $1 ORDER BY orderdate DESC`
 
 	rows, err := a.DB.Query(context.Background(), orderQuery, userID)
 	if err != nil {
 		log.Printf("Error querying orders for user %d: %v. Returning empty list.", userID, err)
-		json.NewEncoder(w).Encode([]*Order{})
+		_ = json.NewEncoder(w).Encode([]*Order{})
 		return
 	}
 	defer rows.Close()
@@ -203,12 +202,12 @@ func (a *App) getOrdersByUserIDHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := rows.Err(); err != nil {
 		log.Printf("Error after iterating user order rows: %v. Returning empty list.", err)
-		json.NewEncoder(w).Encode([]*Order{})
+		_ = json.NewEncoder(w).Encode([]*Order{})
 		return
 	}
 
 	if len(orders) == 0 {
-		json.NewEncoder(w).Encode(orders)
+		_ = json.NewEncoder(w).Encode(orders)
 		return
 	}
 
@@ -235,7 +234,10 @@ func (a *App) getOrdersByUserIDHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	json.NewEncoder(w).Encode(orders)
+	err = json.NewEncoder(w).Encode(orders)
+	if err != nil {
+		return
+	}
 }
 
 func (a *App) createOrderHandler(w http.ResponseWriter, r *http.Request) {
@@ -264,7 +266,10 @@ func (a *App) createOrderHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, fmt.Sprintf("User with ID %d not found", req.UserID), userResp.StatusCode)
 		return
 	}
-	userResp.Body.Close()
+	err = userResp.Body.Close()
+	if err != nil {
+		return
+	}
 	log.Println("--- DEBUG: User validation successful ---")
 
 	// 2. Get Product Details and Calculate Total
@@ -281,7 +286,9 @@ func (a *App) createOrderHandler(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, "Failed to contact product service", http.StatusServiceUnavailable)
 			return
 		}
-		defer resp.Body.Close()
+		defer func(Body io.ReadCloser) {
+			_ = Body.Close()
+		}(resp.Body)
 		if resp.StatusCode != http.StatusOK {
 			errorMsg := fmt.Sprintf("Failed to fetch product with ID %d; downstream service returned status %d", pid, resp.StatusCode)
 			writeJSONError(w, errorMsg, resp.StatusCode)
@@ -306,7 +313,14 @@ func (a *App) createOrderHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "Failed to begin transaction", http.StatusInternalServerError)
 		return
 	}
-	defer tx.Rollback(ctx)
+	defer func(tx pgx.Tx, ctx context.Context) {
+		err := tx.Rollback(ctx)
+		if err != nil {
+			log.Printf("Warning: Failed to rollback transaction: %v", err)
+		} else {
+			log.Println("--- DEBUG: Transaction rolled back successfully ---")
+		}
+	}(tx, ctx)
 
 	log.Println("--- DEBUG: Inserting into 'orders' table ---")
 	var orderID int
@@ -366,6 +380,9 @@ func (a *App) createOrderHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(newOrder)
+	err = json.NewEncoder(w).Encode(newOrder)
+	if err != nil {
+		return
+	}
 	log.Println("--- DEBUG: createOrderHandler finished successfully, returned full order object ---")
 }
